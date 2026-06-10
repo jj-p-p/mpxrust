@@ -1,47 +1,45 @@
-//! L0/L1 — Apertura del Compound File y detección de versión.
+//! L0/L1 — Apertura del Compound File, detección de versión y protección.
 //!
 //! La detección replica a MPXJ (`MPPReader.java` + `CompObj.java`): se lee el
 //! stream `\x01CompObj` y se mira el string de formato (`MSProject.MPP14`).
 //! Solo MPP14 está soportado; el resto produce `UnsupportedVersion` con un
 //! mensaje accionable.
+//!
+//! Protección (port de `MPP14Reader.populateMemberData` +
+//! `DocumentInputStreamFactory`): el stream raíz `Props14` trae
+//! `PASSWORD_FLAG` (0x01 = password de lectura, 0x02 = de escritura) y
+//! `ENCRYPTION_CODE`. Con password de lectura + hash presente el archivo es
+//! ilegible (ni MPXJ sabe descifrarlo) → `PasswordProtected`. Con cualquier
+//! flag, algunos streams van ofuscados con XOR de un byte — eso sí lo
+//! manejamos (`stream_decrypted`).
 
 use std::io::{Read, Seek};
 
-use crate::blocks::{FixedData, FixedMeta, Props, Var2Data, VarMeta};
+use crate::blocks::Props;
 use crate::error::MppError;
 
 /// Storage raíz de los datos de proyecto en un MPP14.
 const MPP14_ROOT: &str = "/   114";
 
-/// Tamaño de item del FixedMeta de tareas en MPP14 (MPXJ `MPP14Reader`).
-pub const TASK_FIXED_META_ITEM_SIZE: usize = 47;
-/// Tamaño de item del FixedMeta de recursos en MPP14.
-pub const RSC_FIXED_META_ITEM_SIZE: usize = 37;
-/// Candidatos de tamaño para el Fixed2Meta de tareas (varía según qué
-/// versión de Project escribió el archivo). Se consume en H3 junto a
-/// `FixedMeta::parse_with_candidate_sizes`.
-#[allow(dead_code)]
-pub const TASK_FIXED2_META_ITEM_SIZES: &[usize] = &[92, 93, 94, 95, 96];
+/// Claves del Props14 raíz (PropsKey.java).
+const PASSWORD_FLAG: i32 = 893386752;
+const PROTECTION_PASSWORD_HASH: i32 = 893386756;
+const ENCRYPTION_CODE: i32 = 893386759;
 
 pub struct MppContainer<F> {
     comp: cfb::CompoundFile<F>,
     pub file_format: String,
     pub application_name: String,
-}
-
-/// Los cuatro streams estándar de un directorio `TBknd*`, ya parseados.
-pub struct BlockSet {
-    pub var_meta: VarMeta,
-    // los readers de H3+ leen los campos var; hoy solo lo recorren los tests
-    #[allow(dead_code)]
-    pub var_data: Var2Data,
-    pub fixed_meta: FixedMeta,
-    pub fixed_data: FixedData,
+    /// Versión interna de la app que escribió el archivo (14 = Project 2010,
+    /// 15 = 2013, 16 = 2016+). Decide variantes de layout (bits de metadata,
+    /// offsets de lag en relaciones).
+    pub application_version: u32,
+    /// Máscara XOR de la ofuscación por password (0 = sin ofuscar).
+    encryption_mask: u8,
 }
 
 impl<F: Read + Seek> MppContainer<F> {
-    /// Abre el contenedor, valida que sea un MPP14 y deja listo el acceso
-    /// a los streams del proyecto.
+    /// Abre el contenedor, valida que sea un MPP14 legible.
     pub fn open(inner: F) -> Result<Self, MppError> {
         let mut comp = cfb::CompoundFile::open(inner)
             .map_err(|e| MppError::NotACompoundFile(e.to_string()))?;
@@ -66,10 +64,47 @@ impl<F: Read + Seek> MppContainer<F> {
             ));
         }
 
+        // "Microsoft Project 14.0" → 14 (CompObj.java extrae el entero del nombre)
+        let application_version = application_name
+            .split(|c: char| !c.is_ascii_digit())
+            .find(|s| !s.is_empty())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(14);
+
+        // Protección: Props14 del storage RAÍZ (no confundir con `   114/Props`)
+        let mut encryption_mask = 0u8;
+        if comp.is_stream("/Props14") {
+            let mut buf = Vec::new();
+            comp.open_stream("/Props14")
+                .map_err(|e| MppError::corrupt("Props14", e.to_string()))?
+                .read_to_end(&mut buf)?;
+            let props = Props::parse(&buf, "Props14")?;
+
+            let flag = props
+                .byte_array(PASSWORD_FLAG)
+                .and_then(|b| b.first().copied())
+                .unwrap_or(0);
+            let read_password = flag & 0x1 != 0;
+            let encryption_xml = props.byte_array(PROTECTION_PASSWORD_HASH).is_some();
+            // MPXJ: flag de lectura sin el XML de cifrado = archivo abrible
+            if read_password && encryption_xml {
+                return Err(MppError::PasswordProtected);
+            }
+            if flag != 0 {
+                let code = props
+                    .byte_array(ENCRYPTION_CODE)
+                    .and_then(|b| b.first().copied())
+                    .unwrap_or(0);
+                encryption_mask = if code == 0 { 0 } else { 0xFF - code };
+            }
+        }
+
         Ok(MppContainer {
             comp,
             file_format,
             application_name,
+            application_version,
+            encryption_mask,
         })
     }
 
@@ -85,45 +120,27 @@ impl<F: Read + Seek> MppContainer<F> {
         Ok(buf)
     }
 
-    /// Streams opcionales (p. ej. `TBkndTask/Props` con custom fields) — H3+.
-    #[allow(dead_code)]
+    /// Igual que [`stream`](Self::stream) pero aplicando la máscara XOR de la
+    /// ofuscación por password. MPXJ solo la aplica a los streams que abre
+    /// vía `DocumentInputStreamFactory`: `Props` del proyecto, FixedData de
+    /// recursos/asignaciones/relaciones — NUNCA a los de tareas.
+    pub fn stream_decrypted(&mut self, relative: &str) -> Result<Vec<u8>, MppError> {
+        let mut buf = self.stream(relative)?;
+        if self.encryption_mask != 0 {
+            for b in &mut buf {
+                *b ^= self.encryption_mask;
+            }
+        }
+        Ok(buf)
+    }
+
     pub fn has_stream(&self, relative: &str) -> bool {
         self.comp.is_stream(format!("{MPP14_ROOT}/{relative}"))
     }
 
-    /// `Props` del proyecto (storage raíz `   114/Props`).
+    /// `Props` del proyecto (`   114/Props` — ofuscable).
     pub fn project_props(&mut self) -> Result<Props, MppError> {
-        Props::parse(&self.stream("Props")?, "Props")
-    }
-
-    /// Parsea los cuatro streams estándar de un directorio `TBknd*`.
-    ///
-    /// `max_fixed_item_size = 0` significa sin límite (en el crate completo
-    /// el límite sale del FieldMap — `getMaxFixedDataSize`, ver docs/03 H2).
-    pub fn block_set(
-        &mut self,
-        dir: &str,
-        fixed_meta_item_size: usize,
-        max_fixed_item_size: usize,
-    ) -> Result<BlockSet, MppError> {
-        let var_meta = VarMeta::parse(&self.stream(&format!("{dir}/VarMeta"))?, dir)?;
-        let var_data = Var2Data::parse(&var_meta, &self.stream(&format!("{dir}/Var2Data"))?);
-        let fixed_meta = FixedMeta::parse(
-            &self.stream(&format!("{dir}/FixedMeta"))?,
-            fixed_meta_item_size,
-            dir,
-        )?;
-        let fixed_data = FixedData::parse(
-            &fixed_meta,
-            &self.stream(&format!("{dir}/FixedData"))?,
-            max_fixed_item_size,
-        );
-        Ok(BlockSet {
-            var_meta,
-            var_data,
-            fixed_meta,
-            fixed_data,
-        })
+        Props::parse(&self.stream_decrypted("Props")?, "Props")
     }
 }
 

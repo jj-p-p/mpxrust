@@ -7,25 +7,27 @@
 //! ```no_run
 //! let project = mpxrust::read_mpp("plan.mpp").unwrap();
 //! for task in &project.tasks {
-//!     println!("{:?} {:?}", task.uid, task.name);
+//!     println!("{} {:?}", task.uid, task.name);
 //! }
 //! ```
 //!
 //! ## Estado (roadmap en docs/03-diseno-crate.md)
 //!
-//! - **H1 (actual):** contenedor + capa de bloques (`Props`, `VarMeta`,
-//!   `Var2Data`, `FixedMeta`, `FixedData`) y detección de versión vía CompObj.
-//!   [`read_mpp`] valida el archivo y devuelve el modelo aún sin poblar;
-//!   [`inspect_mpp`] expone las estadísticas de bloques.
-//! - **H2:** FieldMap14 (offsets dinámicos por archivo).
-//! - **H3+:** población de tareas, dependencias, recursos, calendarios.
+//! - **H1–H5:** contenedor + bloques + FieldMap dinámico + tareas (jerarquía,
+//!   fechas, duración, trabajo, %, constraints, hitos), dependencias con lag,
+//!   recursos y asignaciones. [`ProjectFile::to_jirast_json`] emite el shape
+//!   `{project, issues[]}` que consume jirast.
+//! - **Pendiente:** calendarios con excepciones, custom fields, baselines.
 //!
 //! ## Licencia
 //!
 //! LGPL-2.1-or-later — este crate es una obra derivada de MPXJ (LGPL 2.1).
 
 mod container;
+mod dec;
 mod error;
+mod field_map;
+mod reader;
 mod util;
 
 pub mod blocks;
@@ -40,40 +42,33 @@ pub use model::{
     Task,
 };
 
-use container::{MppContainer, RSC_FIXED_META_ITEM_SIZE, TASK_FIXED_META_ITEM_SIZE};
+use container::MppContainer;
 
 /// Lee un `.mpp` desde disco.
 pub fn read_mpp(path: impl AsRef<Path>) -> Result<ProjectFile, MppError> {
-    read_project(MppContainer::open(std::fs::File::open(path)?)?)
+    let mut container = MppContainer::open(std::fs::File::open(path)?)?;
+    reader::read_project_file(&mut container)
 }
 
 /// Lee un `.mpp` desde memoria (p. ej. bytes recibidos por un comando Tauri).
 pub fn read_mpp_bytes(data: &[u8]) -> Result<ProjectFile, MppError> {
-    read_project(MppContainer::open(Cursor::new(data))?)
+    let mut container = MppContainer::open(Cursor::new(data))?;
+    reader::read_project_file(&mut container)
 }
 
-fn read_project<F: Read + Seek>(mut container: MppContainer<F>) -> Result<ProjectFile, MppError> {
-    // H1: validar estructura completa (todos los bloques parsean).
-    // La población del modelo llega con el FieldMap (H2) y los readers (H3+).
-    let _props = container.project_props()?;
-    let _tasks = container.block_set("TBkndTask", TASK_FIXED_META_ITEM_SIZE, 0)?;
-    let _resources = container.block_set("TBkndRsc", RSC_FIXED_META_ITEM_SIZE, 0)?;
-
-    Ok(ProjectFile::default())
-}
-
-/// Resumen estructural de un `.mpp` — para diagnóstico y tests de la capa
-/// de bloques. No interpreta semántica de campos.
+/// Resumen estructural de un `.mpp` — para diagnóstico. No interpreta
+/// semántica más allá de la necesaria para contar.
 #[derive(Debug, serde::Serialize)]
 pub struct MppSummary {
     /// Nombre de la aplicación que escribió el archivo (CompObj).
     pub application_name: String,
     /// Identificador de formato (`MSProject.MPP14`).
     pub file_format: String,
+    /// Versión interna de la app (14 = Project 2010, 15 = 2013, 16 = 2016+).
+    pub application_version: u32,
     /// Cantidad de propiedades del Props del proyecto.
     pub project_props_count: usize,
     pub tasks: BlockSetSummary,
-    pub resources: BlockSetSummary,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -88,26 +83,25 @@ pub struct BlockSetSummary {
     pub fixed_populated_count: usize,
 }
 
-/// Abre un `.mpp` y devuelve estadísticas de sus bloques.
+/// Abre un `.mpp` y devuelve estadísticas de sus bloques de tareas.
 pub fn inspect_mpp(path: impl AsRef<Path>) -> Result<MppSummary, MppError> {
-    let mut container = MppContainer::open(std::fs::File::open(path)?)?;
+    inspect(MppContainer::open(std::fs::File::open(path)?)?)
+}
 
+fn inspect<F: Read + Seek>(mut container: MppContainer<F>) -> Result<MppSummary, MppError> {
     let props = container.project_props()?;
-    let tasks = container.block_set("TBkndTask", TASK_FIXED_META_ITEM_SIZE, 0)?;
-    let resources = container.block_set("TBkndRsc", RSC_FIXED_META_ITEM_SIZE, 0)?;
-
-    let summarize = |b: &container::BlockSet| BlockSetSummary {
-        var_uid_count: b.var_meta.uid_count(),
-        var_entry_count: b.var_meta.entry_count(),
-        fixed_item_count: b.fixed_meta.item_count(),
-        fixed_populated_count: b.fixed_data.iter().count(),
-    };
+    let blocks = reader::tasks::read_blocks(&mut container)?;
 
     Ok(MppSummary {
         application_name: container.application_name.clone(),
         file_format: container.file_format.clone(),
+        application_version: container.application_version,
         project_props_count: props.len(),
-        tasks: summarize(&tasks),
-        resources: summarize(&resources),
+        tasks: BlockSetSummary {
+            var_uid_count: blocks.var_meta.uid_count(),
+            var_entry_count: blocks.var_meta.entry_count(),
+            fixed_item_count: blocks.fixed_meta.item_count(),
+            fixed_populated_count: blocks.fixed_data.iter().count(),
+        },
     })
 }

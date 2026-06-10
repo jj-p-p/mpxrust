@@ -56,6 +56,38 @@ impl FixedData {
         FixedData { items }
     }
 
+    /// Variante con tamaño de item forzado, direccionado por los offsets del
+    /// FixedMeta (MPXJ `FixedData(FixedMeta, int itemSize, InputStream)`).
+    /// La usa ConstraintFactory (TBkndCons, items de 20 bytes).
+    pub fn parse_with_item_size(meta: &FixedMeta, data: &[u8], item_size: usize) -> Self {
+        let mut items: Vec<Option<Vec<u8>>> = vec![None; meta.item_count()];
+        for (index, slot) in items.iter_mut().enumerate() {
+            let Some(offset) = meta.data_offset(index) else {
+                continue;
+            };
+            if offset < 0 || offset as usize > data.len() {
+                continue;
+            }
+            let offset = offset as usize;
+            let size = item_size.min(data.len() - offset);
+            if size > 0 {
+                *slot = Some(data[offset..offset + size].to_vec());
+            }
+        }
+        FixedData { items }
+    }
+
+    /// Variante secuencial sin metadatos: items consecutivos de tamaño fijo
+    /// (MPXJ `FixedData(int itemSize, InputStream)`). La usan las
+    /// asignaciones (TBkndAssn: 110 y 48 bytes).
+    pub fn parse_sequential(data: &[u8], item_size: usize) -> Self {
+        let items = data
+            .chunks_exact(item_size)
+            .map(|c| Some(c.to_vec()))
+            .collect();
+        FixedData { items }
+    }
+
     pub fn item_count(&self) -> usize {
         self.items.len()
     }

@@ -4,10 +4,13 @@ Lector **en Rust puro** de archivos `.mpp` de Microsoft Project (formato
 **MPP14**: Project 2010 → 365). Port del subconjunto de lectura de
 [MPXJ](https://www.mpxj.org/) — sin Java, sin sidecars, sin inflar tu binario.
 
-> Estado: **en desarrollo (H1)** — contenedor CFB, detección de versión y capa
-> de bloques (Props / VarMeta / Var2Data / FixedMeta / FixedData) funcionando
-> contra archivos reales. La población del modelo de tareas llega en H2–H5.
-> Roadmap completo: `../docs/03-diseno-crate.md`.
+> Estado: **funcional (H5)** — lee tareas (jerarquía, fechas, duración,
+> trabajo, % completado, constraints, hitos), dependencias FS/SS/FF/SF con
+> lag, recursos y asignaciones. Paridad 100% verificada contra la herramienta
+> de referencia (90/90 issues, 85/85 dependencias, 0 diferencias) y corpus
+> público de MPXJ escrito por Project 2010 y 2013. Binario de ejemplo
+> completo: **0.7 MB**. Pendiente: calendarios con excepciones, custom
+> fields, baselines. Roadmap: `PLAN.md`.
 
 ## Uso
 

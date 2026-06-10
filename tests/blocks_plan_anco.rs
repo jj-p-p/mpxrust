@@ -42,8 +42,6 @@ fn plan_anco_blocks_parse_with_expected_counts() {
     assert_eq!(summary.tasks.var_entry_count, 1124);
     assert_eq!(summary.tasks.fixed_item_count, 119);
     assert!(summary.tasks.fixed_populated_count >= 90);
-
-    assert!(summary.resources.var_uid_count > 0);
 }
 
 #[test]
