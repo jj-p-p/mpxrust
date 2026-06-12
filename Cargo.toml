@@ -8,6 +8,8 @@ repository = "https://github.com/jj-p-p/mpxrust"
 keywords = ["mpp", "msproject", "project", "mpxj", "parser"]
 categories = ["parser-implementations"]
 readme = "README.md"
+# el corpus de prueba (.mpp del repo de MPXJ) vive en git, no en el paquete
+exclude = ["tests/data/", ".github/"]
 
 [dependencies]
 cfb = "0.14.0"
