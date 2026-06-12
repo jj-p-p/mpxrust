@@ -52,5 +52,9 @@ fn public_corpus_parses_with_tasks() {
         }
     }
 
-    assert!(failures.is_empty(), "fallas en corpus público:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "fallas en corpus público:\n{}",
+        failures.join("\n")
+    );
 }
