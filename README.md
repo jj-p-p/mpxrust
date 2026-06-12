@@ -1,16 +1,16 @@
-# MPXRust (`mpxrust`)
+# mpxrust
 
 Lector **en Rust puro** de archivos `.mpp` de Microsoft Project (formato
 **MPP14**: Project 2010 → 365). Port del subconjunto de lectura de
-[MPXJ](https://www.mpxj.org/) — sin Java, sin sidecars, sin inflar tu binario.
+[MPXJ](https://www.mpxj.org/) — sin JVM, sin procesos externos, sin peso
+extra en el binario.
 
-> Estado: **funcional (H5)** — lee tareas (jerarquía, fechas, duración,
-> trabajo, % completado, constraints, hitos), dependencias FS/SS/FF/SF con
-> lag, recursos y asignaciones. Paridad 100% verificada contra la herramienta
-> de referencia (90/90 issues, 85/85 dependencias, 0 diferencias) y corpus
-> público de MPXJ escrito por Project 2010 y 2013. Binario de ejemplo
-> completo: **0.7 MB**. Pendiente: calendarios con excepciones, custom
-> fields, baselines. Roadmap: `PLAN.md`.
+**Cobertura actual**: tareas (jerarquía, fechas, duración, trabajo,
+% completado, constraints, hitos), dependencias FS/SS/FF/SF con lag,
+recursos y asignaciones. Validado contra el corpus de pruebas de MPXJ
+(archivos escritos por Project 2010 y 2013) y contra proyectos reales.
+Fuera de alcance por ahora: calendarios con excepciones, custom fields y
+baselines. Detalle de hitos y desviaciones conocidas en [`PLAN.md`](PLAN.md).
 
 ## Uso
 
@@ -18,71 +18,60 @@ Lector **en Rust puro** de archivos `.mpp` de Microsoft Project (formato
 // desde disco
 let project = mpxrust::read_mpp("plan.mpp")?;
 
-// desde memoria (p. ej. bytes que llegan a un comando Tauri)
+// desde memoria (p. ej. bytes recibidos por un comando Tauri)
 let project = mpxrust::read_mpp_bytes(&bytes)?;
 
-// diagnóstico estructural (qué trae el archivo, sin semántica)
-let summary = mpxrust::inspect_mpp("plan.mpp")?;
-println!("{}", serde_json::to_string_pretty(&summary)?);
+for task in &project.tasks {
+    println!("{:>4} {:?} {:?}", task.uid, task.name, task.start_date);
+}
 ```
 
-Errores accionables: `UnsupportedVersion` (con la versión detectada, p. ej.
-"MPP12 (Project 2007)"), `PasswordProtected`, `NotACompoundFile`, `Corrupt`.
+Los errores distinguen las causas que el usuario final puede accionar:
+`UnsupportedVersion` (incluye la versión detectada, p. ej. "MPP12 —
+Project 2007"), `PasswordProtected`, `NotACompoundFile` y `Corrupt`.
 
-## Cómo se consume el crate
+## Instalación
 
-Es una dependencia Cargo común y corriente — **se compila y linkea estático
-dentro de tu binario**, no hay nada que instalar ni cargar en runtime:
+Dependencia Cargo estándar, linkeada estáticamente — nada que instalar ni
+cargar en runtime:
 
 ```toml
-# mientras no esté publicado: por path (mismo disco)
 [dependencies]
-mpxrust = { path = "../MPXRust/MPXRust" }
-
-# o por git
-mpxrust = { git = "https://github.com/<org>/MPXRust" }
-
-# cuando se publique en crates.io
-mpxrust = "0.1"
+mpxrust = { git = "https://github.com/jj-p-p/mpxrust" }
 ```
 
-Dependencias transitivas: `cfb` (contenedor OLE2), `serde`/`serde_json`,
-`thiserror`. Impacto total en el binario: **menos de 1 MB**.
+Dependencias transitivas mínimas: `cfb` (contenedor OLE2), `serde`,
+`serde_json`, `thiserror`. Impacto total en el binario final: < 1 MB.
 
-## Licencia: LGPL-2.1-or-later — qué significa en la práctica
+## Licencia
 
-Este crate es un **port (obra derivada) de MPXJ**, que es LGPL 2.1. Por eso
-el crate **debe ser y es LGPL-2.1-or-later** — no es elegible para MIT/Apache.
+**LGPL-2.1-or-later.** Este crate es una obra derivada de MPXJ (LGPL 2.1),
+y conserva su licencia. En la práctica:
 
-Qué implica para una app que lo usa (p. ej. jirast):
+- Una aplicación que **usa** el crate no queda cubierta por la LGPL y puede
+  ser propietaria; al distribuirla debe incluir el aviso de licencia y un
+  enlace al código fuente de la versión usada de este crate.
+- Las **modificaciones al crate** sí deben publicarse bajo LGPL — los
+  cambios se hacen en este repositorio, no en forks privados.
 
-- **Tu app NO se vuelve LGPL.** La LGPL es copyleft débil: solo cubre esta
-  librería y sus modificaciones, no el programa que la consume.
-- **Uso interno (no distribuyes la app a terceros): cero obligaciones.**
-- **Si distribuyes la app a terceros**, debes: (1) avisar que usa mpxrust/LGPL
-  e incluir el texto de la licencia, (2) dar acceso al fuente de la versión
-  exacta de mpxrust usada (un link a este repo basta), y (3) permitir que el
-  usuario relinke la app con una versión modificada de la librería — con
-  linking estático de Rust, la vía práctica es ofrecer los objetos compilados
-  de tu app o, más simple, no modificar el crate en privado: cualquier cambio
-  se hace aquí, en el repo público.
-- **Modificaste mpxrust**: esas modificaciones sí deben publicarse bajo LGPL.
-
-## Tests
+## Desarrollo
 
 ```bash
-cargo test                      # unitarios (fixtures sintéticos) — no requieren corpus
-MPXRUST_PRIVATE_MPP=/ruta/plan.mpp cargo test   # + integración con un MPP14 real
+cargo test
 ```
 
-El corpus privado (archivos `.mpp` reales con datos de personas/proyectos)
-vive en `tests/data/private/` y está **gitignoreado**: nunca se commitea.
-El corpus público (archivos de prueba del repo de MPXJ) se incorpora en H2+
-(ver `../docs/04-corpus-y-golden-tests.md`).
+La suite combina tests unitarios (fixtures binarios sintéticos por cada
+estructura del formato) e integración contra el corpus de `tests/data/`.
+Para validar contra un proyecto propio: `MPXRUST_PRIVATE_MPP=/ruta/plan.mpp
+cargo test` — los tests que dependen de archivos no incluidos en el repo se
+omiten automáticamente.
+
+CI: `cargo fmt --check`, `clippy -D warnings` y la suite completa en cada
+push.
 
 ## Créditos
 
-El conocimiento del formato `.mpp` (no documentado por Microsoft) proviene
-íntegramente de [MPXJ](https://github.com/joniles/mpxj) de Jon Iles y
-colaboradores — ~20 años de ingeniería inversa bajo LGPL. Cada módulo de
-`src/blocks/` cita el archivo Java del que es port.
+El formato `.mpp` no está documentado por Microsoft; todo el conocimiento
+del formato proviene de [MPXJ](https://github.com/joniles/mpxj), de Jon
+Iles y colaboradores. Cada módulo de este crate cita el archivo Java del
+que es port.
